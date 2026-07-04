@@ -156,9 +156,9 @@ func renderHeader(m MetricsSnapshot, errMsg string, animFrame int, termWidth int
 	}
 
 	// Hardware info for a single line.
-	infoParts := []string{}
+	identityParts := []string{}
 	if m.Hardware.Model != "" {
-		infoParts = append(infoParts, primaryStyle.Render(m.Hardware.Model))
+		identityParts = append(identityParts, primaryStyle.Render(m.Hardware.Model))
 	}
 	if m.Hardware.CPUModel != "" {
 		cpuInfo := m.Hardware.CPUModel
@@ -166,24 +166,22 @@ func renderHeader(m MetricsSnapshot, errMsg string, animFrame int, termWidth int
 		if len(m.GPU) > 0 && m.GPU[0].CoreCount > 0 {
 			cpuInfo += fmt.Sprintf(", %dGPU", m.GPU[0].CoreCount)
 		}
-		infoParts = append(infoParts, cpuInfo)
+		identityParts = append(identityParts, cpuInfo)
 	}
-	var specs []string
+	specParts := []string{}
 	if m.Hardware.TotalRAM != "" {
-		specs = append(specs, m.Hardware.TotalRAM)
+		specParts = append(specParts, "RAM "+m.Hardware.TotalRAM)
 	} else if m.Memory.Total > 0 {
-		specs = append(specs, humanBytes(m.Memory.Total))
+		specParts = append(specParts, "RAM "+humanBytes(m.Memory.Total))
 	}
 	if m.Hardware.DiskSize != "" {
-		specs = append(specs, m.Hardware.DiskSize)
+		specParts = append(specParts, "Disk "+m.Hardware.DiskSize)
 	} else if disk, ok := rootDisk(m.Disks); ok && disk.Total > 0 {
-		specs = append(specs, humanBytes(disk.Total))
+		specParts = append(specParts, "Disk "+humanBytes(disk.Total))
 	}
-	if len(specs) > 0 {
-		infoParts = append(infoParts, strings.Join(specs, "/"))
-	}
+	refreshParts := []string{}
 	if m.Hardware.RefreshRate != "" {
-		infoParts = append(infoParts, m.Hardware.RefreshRate)
+		refreshParts = append(refreshParts, m.Hardware.RefreshRate)
 	}
 	optionalInfoParts := []string{}
 	if !compactHeader && m.Hardware.OSVersion != "" {
@@ -201,6 +199,13 @@ func renderHeader(m MetricsSnapshot, errMsg string, animFrame int, termWidth int
 		}
 		optionalInfoParts = append(optionalInfoParts, uptimeText)
 	}
+	joinInfoParts := func(groups ...[]string) []string {
+		parts := []string{}
+		for _, group := range groups {
+			parts = append(parts, group...)
+		}
+		return parts
+	}
 
 	headLeft := title + "  " + scoreText
 	headerLine := headLeft
@@ -208,22 +213,42 @@ func renderHeader(m MetricsSnapshot, errMsg string, animFrame int, termWidth int
 		headerLine = wrapToWidth(headLeft, termWidth)[0]
 	}
 	if termWidth > 0 {
-		allParts := append(append([]string{}, infoParts...), optionalInfoParts...)
-		if len(allParts) > 0 {
-			combined := headLeft + "  " + strings.Join(allParts, " · ")
+		fitHeaderParts := func(parts []string) (string, bool) {
+			if len(parts) == 0 {
+				return "", false
+			}
+			combined := headLeft + "  " + strings.Join(parts, " · ")
 			if lipgloss.Width(combined) <= termWidth {
-				headerLine = combined
-			} else {
-				// When width is tight, drop lower-priority tail (OS and uptime) as a group.
-				fitParts := append([]string{}, infoParts...)
-				for len(fitParts) > 0 {
-					candidate := headLeft + "  " + strings.Join(fitParts, " · ")
-					if lipgloss.Width(candidate) <= termWidth {
-						headerLine = candidate
-						break
-					}
-					fitParts = fitParts[:len(fitParts)-1]
+				return combined, true
+			}
+			return "", false
+		}
+		candidates := [][]string{
+			joinInfoParts(identityParts, specParts, refreshParts, optionalInfoParts),
+			joinInfoParts(identityParts, specParts, refreshParts),
+			joinInfoParts(identityParts, specParts),
+		}
+		if len(identityParts) > 1 {
+			// Keep labeled RAM/Disk visible on narrow terminals before CPU details.
+			candidates = append(candidates, joinInfoParts(identityParts[:1], specParts))
+		}
+		candidates = append(candidates, specParts)
+		for _, parts := range candidates {
+			if line, ok := fitHeaderParts(parts); ok {
+				headerLine = line
+				break
+			}
+		}
+		if headerLine == headLeft {
+			// Last resort: preserve the existing tail-drop behavior for unusual
+			// hardware strings that still do not fit the priority candidates.
+			fitParts := joinInfoParts(identityParts, specParts, refreshParts)
+			for len(fitParts) > 0 {
+				if line, ok := fitHeaderParts(fitParts); ok {
+					headerLine = line
+					break
 				}
+				fitParts = fitParts[:len(fitParts)-1]
 			}
 		}
 	}

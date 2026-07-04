@@ -1143,9 +1143,13 @@ func TestRenderHeaderUsesFastMetricSpecFallbacks(t *testing.T) {
 
 	header, _ := renderHeader(m, "", 0, 120, true)
 	plain := stripANSI(header)
-	want := humanBytes(ram) + "/" + humanBytes(diskSize)
-	if !strings.Contains(plain, want) {
-		t.Fatalf("renderHeader() should use fast metric specs %q, got %q", want, plain)
+	wantRAM := "RAM " + humanBytes(ram)
+	wantDisk := "Disk " + humanBytes(diskSize)
+	if !strings.Contains(plain, wantRAM) || !strings.Contains(plain, wantDisk) {
+		t.Fatalf("renderHeader() should label fast metric specs %q and %q, got %q", wantRAM, wantDisk, plain)
+	}
+	if strings.Contains(plain, humanBytes(ram)+"/"+humanBytes(diskSize)) {
+		t.Fatalf("renderHeader() should not render RAM and disk as a slash pair, got %q", plain)
 	}
 }
 
@@ -1192,6 +1196,34 @@ func TestRenderHeaderHidesOSAndUptimeOnNarrowWidth(t *testing.T) {
 	}
 	if strings.Contains(plain, "up 10d 3h") {
 		t.Fatalf("renderHeader() narrow width should hide uptime, got %q", plain)
+	}
+}
+
+func TestRenderHeaderKeepsLabeledSpecsOnCompactWidth(t *testing.T) {
+	m := MetricsSnapshot{
+		HealthScore: 91,
+		Hardware: HardwareInfo{
+			Model:       "MacBook Pro",
+			CPUModel:    "Apple M4 Pro",
+			TotalRAM:    "48G",
+			DiskSize:    "926GB",
+			RefreshRate: "120Hz",
+		},
+		GPU: []GPUStatus{{CoreCount: 20}},
+	}
+
+	header, _ := renderHeader(m, "", 0, 80, true)
+	plain := stripANSI(header)
+	if !strings.Contains(plain, "RAM 48G") || !strings.Contains(plain, "Disk 926GB") {
+		t.Fatalf("renderHeader() compact width should keep labeled specs, got %q", plain)
+	}
+	if strings.Contains(plain, "48G/926GB") {
+		t.Fatalf("renderHeader() compact width should not use slash specs, got %q", plain)
+	}
+	for line := range strings.Lines(header) {
+		if lipgloss.Width(stripANSI(line)) > 80 {
+			t.Fatalf("renderHeader() compact line exceeds width: %q", line)
+		}
 	}
 }
 
