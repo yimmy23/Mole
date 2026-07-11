@@ -662,6 +662,56 @@ EOF
     [[ "$output" != *"Homebrew links · restored"* ]]
 }
 
+@test "root Homebrew link restoration drops to the invoking user" {
+    run bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/brew.sh"
+
+HOME=$(cd -P "$HOME" && pwd)
+TEST_BREW_PREFIX="$HOME/homebrew-root-boundary"
+TEST_BREW_CELLAR="$TEST_BREW_PREFIX/Cellar"
+target="$TEST_BREW_CELLAR/node/26.4.0/bin/node"
+link_path="$TEST_BREW_PREFIX/bin/node"
+calls="$HOME/homebrew-root-boundary.calls"
+mkdir -p "$TEST_BREW_PREFIX/bin" "$(dirname "$target")"
+printf '#!/bin/sh\n' > "$target"
+
+run_with_timeout() {
+    shift
+    "$@"
+}
+brew() {
+    case "$*" in
+        --prefix) printf '%s\n' "$TEST_BREW_PREFIX" ;;
+        --cellar) printf '%s\n' "$TEST_BREW_CELLAR" ;;
+        *) return 0 ;;
+    esac
+}
+note_activity() { :; }
+is_root_user() { return 0; }
+run_homebrew_link_restore_as_invoking_user() {
+    printf '%s\n' "$*" >> "$calls"
+    "$@"
+}
+
+SUDO_USER="brew-user"
+BREW_ACTIVE_PREFIX="$TEST_BREW_PREFIX"
+BREW_ACTIVE_CELLAR="$TEST_BREW_CELLAR"
+BREW_ACTIVE_LINK_PATHS=("$link_path")
+BREW_ACTIVE_LINK_TARGETS=("$target")
+BREW_ACTIVE_RESOLVED_TARGETS=("$target")
+
+restore_homebrew_active_links
+[[ -L "$link_path" ]]
+[[ "$(readlink "$link_path")" == "$target" ]]
+grep -Fq "/bin/ln -s $target $link_path" "$calls"
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Homebrew links · restored 1 active executable(s)"* ]]
+}
+
 @test "clean_homebrew dry-run shows brew autoremove preview without removing formulae" {
     run bash --noprofile --norc << 'EOF'
 set -euo pipefail

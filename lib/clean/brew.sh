@@ -53,6 +53,26 @@ brew_cleanup_resolve_existing_path() {
     printf '%s/%s\n' "$parent" "${path##*/}"
 }
 
+run_homebrew_link_restore_as_invoking_user() {
+    /usr/bin/sudo -u "$SUDO_USER" -- "$@"
+}
+
+restore_homebrew_link() {
+    local link_target="$1"
+    local link_path="$2"
+
+    if is_root_user; then
+        [[ -n "${SUDO_USER:-}" && "${SUDO_USER:-}" != "root" ]] || return 1
+        # Homebrew's bin directories belong to the invoking user. Dropping
+        # privileges for the actual write closes the parent-directory TOCTOU:
+        # even if that user swaps bin after validation, root never follows it.
+        run_homebrew_link_restore_as_invoking_user /bin/ln -s "$link_target" "$link_path"
+        return $?
+    fi
+
+    /bin/ln -s "$link_target" "$link_path"
+}
+
 # Record active Homebrew executable links in memory before delegating to
 # `brew cleanup`. A file in the invoking user's temp tree cannot safely
 # authorize later link creation when the whole command is running as root.
@@ -161,7 +181,7 @@ restore_homebrew_active_links() {
 
         current_parent=$(cd "${link_path%/*}" 2> /dev/null && pwd -P) || continue
         [[ "$current_parent" == "${link_path%/*}" ]] || continue
-        if ln -s "$link_target" "$link_path" 2> /dev/null; then
+        if restore_homebrew_link "$link_target" "$link_path" 2> /dev/null; then
             restored=$((restored + 1))
         else
             failed=$((failed + 1))
