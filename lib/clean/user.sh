@@ -346,7 +346,131 @@ _clean_darwin_user_runtime_dirs() {
     start_section_spinner "Cleaning runtime files..."
 }
 
-# Remove old Google Chrome versions while keeping Current.
+# Chrome, Edge, and Brave are all Chromium: same versioned framework layout
+# (Contents/Frameworks/<X>.framework/Versions with a Current symlink), same
+# keep-Current + keep-newer-staged-update rules, same removal and accounting.
+# Only four facts differ per browser, so they are parameters here and the three
+# public functions below are thin wrappers.
+#
+# clean_edge_updater_old_versions is deliberately NOT routed through this: it
+# keeps the latest by `sort -V` (no Current symlink at all) and never escalates
+# to a sudo removal. Merging it would change its semantics.
+_clean_chromium_old_versions() {
+    local label="$1"
+    local framework="$2"
+    local running_probe="$3"
+    shift 3
+    local -a app_paths=("$@")
+
+    if "$running_probe"; then
+        echo -e "  ${GRAY}${ICON_WARNING}${NC} ${label} old versions · skipped (${label} running)"
+        note_activity
+        return 0
+    fi
+
+    local cleaned_count=0
+    local total_size=0
+    local cleaned_any=false
+    local app_path
+
+    for app_path in "${app_paths[@]}"; do
+        [[ -d "$app_path" ]] || continue
+
+        local versions_dir="$app_path/Contents/Frameworks/$framework/Versions"
+        [[ -d "$versions_dir" ]] || continue
+
+        local current_link="$versions_dir/Current"
+        [[ -L "$current_link" ]] || continue
+
+        local current_version
+        current_version=$(readlink "$current_link" 2> /dev/null || true)
+        current_version="${current_version##*/}"
+        [[ -n "$current_version" ]] || continue
+
+        # Verify the Current symlink target exists. If broken, skip to avoid
+        # accidentally deleting the active browser version.
+        if [[ ! -d "$versions_dir/$current_version" ]]; then
+            echo -e "  ${GRAY}${ICON_WARNING}${NC} ${label} old versions · skipped (Current symlink broken)"
+            note_activity
+            continue
+        fi
+
+        # Keep a version newer than Current: it is a freshly staged auto-update
+        # that Current will point at on next launch.
+        local newest_version=""
+        local newest_mtime=0
+        local current_mtime
+        current_mtime=$(stat -f%m "$versions_dir/$current_version" 2> /dev/null || echo "0")
+        [[ "$current_mtime" =~ ^[0-9]+$ ]] || current_mtime=0
+
+        local -a old_versions=()
+        local dir name
+        for dir in "$versions_dir"/*; do
+            [[ -d "$dir" ]] || continue
+            name=$(basename "$dir")
+            [[ "$name" == "Current" ]] && continue
+            local mtime
+            mtime=$(stat -f%m "$dir" 2> /dev/null || echo "0")
+            if [[ "$mtime" =~ ^[0-9]+$ ]] && [[ "$mtime" -gt "$newest_mtime" ]]; then
+                newest_mtime="$mtime"
+                newest_version="$name"
+            fi
+        done
+        if [[ "$newest_mtime" -le "$current_mtime" ]]; then
+            newest_version=""
+        fi
+
+        for dir in "$versions_dir"/*; do
+            [[ -d "$dir" ]] || continue
+            name=$(basename "$dir")
+            [[ "$name" == "Current" ]] && continue
+            [[ "$name" == "$current_version" ]] && continue
+            [[ -n "$newest_version" && "$name" == "$newest_version" ]] && continue
+            if is_path_whitelisted "$dir"; then
+                continue
+            fi
+            old_versions+=("$dir")
+        done
+
+        if [[ ${#old_versions[@]} -eq 0 ]]; then
+            continue
+        fi
+
+        for dir in "${old_versions[@]}"; do
+            local size_kb
+            size_kb=$(get_path_size_kb "$dir" || echo 0)
+            size_kb="${size_kb:-0}"
+            total_size=$((total_size + size_kb))
+            cleaned_count=$((cleaned_count + 1))
+            cleaned_any=true
+            if [[ "$DRY_RUN" != "true" ]]; then
+                if has_sudo_session; then
+                    safe_sudo_remove "$dir" > /dev/null 2>&1 || true
+                else
+                    safe_remove "$dir" true > /dev/null 2>&1 || true
+                fi
+            fi
+        done
+    done
+
+    if [[ "$cleaned_any" == "true" ]]; then
+        local size_human
+        size_human=$(bytes_to_human "$((total_size * 1024))")
+        if [[ "$DRY_RUN" == "true" ]]; then
+            echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} ${label} old versions${NC} · ${YELLOW}${cleaned_count} dirs, $(colorize_human_size "$size_human") ${YELLOW}dry${NC}"
+        else
+            local line_color
+            line_color=$(cleanup_result_color_kb "$total_size")
+            echo -e "  ${line_color}${ICON_SUCCESS}${NC} ${label} old versions${NC} · ${line_color}${cleaned_count} dirs, $size_human${NC}"
+        fi
+        files_cleaned=$((files_cleaned + cleaned_count))
+        total_size_cleaned=$((total_size_cleaned + total_size))
+        total_items=$((total_items + 1))
+        note_activity
+    fi
+}
+
+# Chrome also runs under a helper process name, so the probe is wider than pgrep -x.
 is_google_chrome_running() {
     pgrep -x "Google Chrome" > /dev/null 2>&1 && return 0
     pgrep -x "Google Chrome Helper" > /dev/null 2>&1 && return 0
@@ -354,6 +478,16 @@ is_google_chrome_running() {
     return 1
 }
 
+# Exact process names only: "Microsoft Edge" must not match Microsoft Teams.
+is_microsoft_edge_running() {
+    pgrep -x "Microsoft Edge" > /dev/null 2>&1
+}
+
+is_brave_browser_running() {
+    pgrep -x "Brave Browser" > /dev/null 2>&1
+}
+
+# Remove old Google Chrome versions while keeping Current.
 clean_chrome_old_versions() {
     local -a app_paths
     if [[ -n "${MOLE_CHROME_APP_PATHS:-}" ]]; then
@@ -365,114 +499,12 @@ clean_chrome_old_versions() {
         )
     fi
 
-    if is_google_chrome_running; then
-        echo -e "  ${GRAY}${ICON_WARNING}${NC} Chrome old versions · skipped (Chrome running)"
-        note_activity
-        return 0
-    fi
-
-    local cleaned_count=0
-    local total_size=0
-    local cleaned_any=false
-
-    for app_path in "${app_paths[@]}"; do
-        [[ -d "$app_path" ]] || continue
-
-        local versions_dir="$app_path/Contents/Frameworks/Google Chrome Framework.framework/Versions"
-        [[ -d "$versions_dir" ]] || continue
-
-        local current_link="$versions_dir/Current"
-        [[ -L "$current_link" ]] || continue
-
-        local current_version
-        current_version=$(readlink "$current_link" 2> /dev/null || true)
-        current_version="${current_version##*/}"
-        [[ -n "$current_version" ]] || continue
-
-        # Verify the Current symlink target exists. If broken, skip to avoid
-        # accidentally deleting the active browser version.
-        if [[ ! -d "$versions_dir/$current_version" ]]; then
-            echo -e "  ${GRAY}${ICON_WARNING}${NC} Chrome old versions · skipped (Current symlink broken)"
-            note_activity
-            continue
-        fi
-
-        local newest_version=""
-        local newest_mtime=0
-        local current_mtime
-        current_mtime=$(stat -f%m "$versions_dir/$current_version" 2> /dev/null || echo "0")
-        [[ "$current_mtime" =~ ^[0-9]+$ ]] || current_mtime=0
-
-        local -a old_versions=()
-        local dir name
-        for dir in "$versions_dir"/*; do
-            [[ -d "$dir" ]] || continue
-            name=$(basename "$dir")
-            [[ "$name" == "Current" ]] && continue
-            local mtime
-            mtime=$(stat -f%m "$dir" 2> /dev/null || echo "0")
-            if [[ "$mtime" =~ ^[0-9]+$ ]] && [[ "$mtime" -gt "$newest_mtime" ]]; then
-                newest_mtime="$mtime"
-                newest_version="$name"
-            fi
-        done
-        if [[ "$newest_mtime" -le "$current_mtime" ]]; then
-            newest_version=""
-        fi
-
-        for dir in "$versions_dir"/*; do
-            [[ -d "$dir" ]] || continue
-            name=$(basename "$dir")
-            [[ "$name" == "Current" ]] && continue
-            [[ "$name" == "$current_version" ]] && continue
-            [[ -n "$newest_version" && "$name" == "$newest_version" ]] && continue
-            if is_path_whitelisted "$dir"; then
-                continue
-            fi
-            old_versions+=("$dir")
-        done
-
-        if [[ ${#old_versions[@]} -eq 0 ]]; then
-            continue
-        fi
-
-        for dir in "${old_versions[@]}"; do
-            local size_kb
-            size_kb=$(get_path_size_kb "$dir" || echo 0)
-            size_kb="${size_kb:-0}"
-            total_size=$((total_size + size_kb))
-            cleaned_count=$((cleaned_count + 1))
-            cleaned_any=true
-            if [[ "$DRY_RUN" != "true" ]]; then
-                if has_sudo_session; then
-                    safe_sudo_remove "$dir" > /dev/null 2>&1 || true
-                else
-                    safe_remove "$dir" true > /dev/null 2>&1 || true
-                fi
-            fi
-        done
-    done
-
-    if [[ "$cleaned_any" == "true" ]]; then
-        local size_human
-        size_human=$(bytes_to_human "$((total_size * 1024))")
-        if [[ "$DRY_RUN" == "true" ]]; then
-            echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} Chrome old versions${NC} · ${YELLOW}${cleaned_count} dirs, $(colorize_human_size "$size_human") ${YELLOW}dry${NC}"
-        else
-            local line_color
-            line_color=$(cleanup_result_color_kb "$total_size")
-            echo -e "  ${line_color}${ICON_SUCCESS}${NC} Chrome old versions${NC} · ${line_color}${cleaned_count} dirs, $size_human${NC}"
-        fi
-        files_cleaned=$((files_cleaned + cleaned_count))
-        total_size_cleaned=$((total_size_cleaned + total_size))
-        total_items=$((total_items + 1))
-        note_activity
-    fi
+    _clean_chromium_old_versions "Chrome" "Google Chrome Framework.framework" \
+        is_google_chrome_running "${app_paths[@]}"
 }
 
 # Remove old Microsoft Edge versions while keeping Current.
 clean_edge_old_versions() {
-    # Allow override for testing
     local -a app_paths
     if [[ -n "${MOLE_EDGE_APP_PATHS:-}" ]]; then
         IFS=':' read -ra app_paths <<< "$MOLE_EDGE_APP_PATHS"
@@ -483,112 +515,8 @@ clean_edge_old_versions() {
         )
     fi
 
-    # Match the exact Edge process name to avoid false positives (e.g., Microsoft Teams)
-    if pgrep -x "Microsoft Edge" > /dev/null 2>&1; then
-        echo -e "  ${GRAY}${ICON_WARNING}${NC} Edge old versions · skipped (Edge running)"
-        note_activity
-        return 0
-    fi
-
-    local cleaned_count=0
-    local total_size=0
-    local cleaned_any=false
-
-    for app_path in "${app_paths[@]}"; do
-        [[ -d "$app_path" ]] || continue
-
-        local versions_dir="$app_path/Contents/Frameworks/Microsoft Edge Framework.framework/Versions"
-        [[ -d "$versions_dir" ]] || continue
-
-        local current_link="$versions_dir/Current"
-        [[ -L "$current_link" ]] || continue
-
-        local current_version
-        current_version=$(readlink "$current_link" 2> /dev/null || true)
-        current_version="${current_version##*/}"
-        [[ -n "$current_version" ]] || continue
-
-        # Verify the Current symlink target exists. If broken, skip to avoid
-        # accidentally deleting the active browser version.
-        if [[ ! -d "$versions_dir/$current_version" ]]; then
-            echo -e "  ${GRAY}${ICON_WARNING}${NC} Edge old versions · skipped (Current symlink broken)"
-            note_activity
-            continue
-        fi
-
-        # Keep a version newer than Current: it is a freshly staged auto-update
-        # that Current will point at on next launch. Matches Chrome's guard.
-        local newest_version=""
-        local newest_mtime=0
-        local current_mtime
-        current_mtime=$(stat -f%m "$versions_dir/$current_version" 2> /dev/null || echo "0")
-        [[ "$current_mtime" =~ ^[0-9]+$ ]] || current_mtime=0
-
-        local -a old_versions=()
-        local dir name
-        for dir in "$versions_dir"/*; do
-            [[ -d "$dir" ]] || continue
-            name=$(basename "$dir")
-            [[ "$name" == "Current" ]] && continue
-            local mtime
-            mtime=$(stat -f%m "$dir" 2> /dev/null || echo "0")
-            if [[ "$mtime" =~ ^[0-9]+$ ]] && [[ "$mtime" -gt "$newest_mtime" ]]; then
-                newest_mtime="$mtime"
-                newest_version="$name"
-            fi
-        done
-        if [[ "$newest_mtime" -le "$current_mtime" ]]; then
-            newest_version=""
-        fi
-
-        for dir in "$versions_dir"/*; do
-            [[ -d "$dir" ]] || continue
-            name=$(basename "$dir")
-            [[ "$name" == "Current" ]] && continue
-            [[ "$name" == "$current_version" ]] && continue
-            [[ -n "$newest_version" && "$name" == "$newest_version" ]] && continue
-            if is_path_whitelisted "$dir"; then
-                continue
-            fi
-            old_versions+=("$dir")
-        done
-
-        if [[ ${#old_versions[@]} -eq 0 ]]; then
-            continue
-        fi
-
-        for dir in "${old_versions[@]}"; do
-            local size_kb
-            size_kb=$(get_path_size_kb "$dir" || echo 0)
-            size_kb="${size_kb:-0}"
-            total_size=$((total_size + size_kb))
-            cleaned_count=$((cleaned_count + 1))
-            cleaned_any=true
-            if [[ "$DRY_RUN" != "true" ]]; then
-                if has_sudo_session; then
-                    safe_sudo_remove "$dir" > /dev/null 2>&1 || true
-                else
-                    safe_remove "$dir" true > /dev/null 2>&1 || true
-                fi
-            fi
-        done
-    done
-
-    if [[ "$cleaned_any" == "true" ]]; then
-        local size_human
-        size_human=$(bytes_to_human "$((total_size * 1024))")
-        if [[ "$DRY_RUN" == "true" ]]; then
-            echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} Edge old versions${NC} · ${YELLOW}${cleaned_count} dirs, $(colorize_human_size "$size_human") ${YELLOW}dry${NC}"
-        else
-            local line_color
-            line_color=$(cleanup_result_color_kb "$total_size")
-            echo -e "  ${line_color}${ICON_SUCCESS}${NC} Edge old versions${NC} · ${line_color}${cleaned_count} dirs, $size_human${NC}"
-        fi
-        files_cleaned=$((files_cleaned + cleaned_count))
-        total_size_cleaned=$((total_size_cleaned + total_size))
-        total_items=$((total_items + 1))
-        note_activity
-    fi
+    _clean_chromium_old_versions "Edge" "Microsoft Edge Framework.framework" \
+        is_microsoft_edge_running "${app_paths[@]}"
 }
 
 # Remove old Microsoft EdgeUpdater versions while keeping latest.
@@ -668,110 +596,8 @@ clean_brave_old_versions() {
         )
     fi
 
-    # Match the exact Brave process name to avoid false positives
-    if pgrep -x "Brave Browser" > /dev/null 2>&1; then
-        echo -e "  ${GRAY}${ICON_WARNING}${NC} Brave old versions · skipped (Brave running)"
-        note_activity
-        return 0
-    fi
-
-    local cleaned_count=0
-    local total_size=0
-    local cleaned_any=false
-
-    for app_path in "${app_paths[@]}"; do
-        [[ -d "$app_path" ]] || continue
-
-        local versions_dir="$app_path/Contents/Frameworks/Brave Browser Framework.framework/Versions"
-        [[ -d "$versions_dir" ]] || continue
-
-        local current_link="$versions_dir/Current"
-        [[ -L "$current_link" ]] || continue
-
-        local current_version
-        current_version=$(readlink "$current_link" 2> /dev/null || true)
-        current_version="${current_version##*/}"
-        [[ -n "$current_version" ]] || continue
-
-        if [[ ! -d "$versions_dir/$current_version" ]]; then
-            echo -e "  ${GRAY}${ICON_WARNING}${NC} Brave old versions · skipped (Current symlink broken)"
-            note_activity
-            continue
-        fi
-
-        # Keep a version newer than Current: a freshly staged auto-update.
-        # Matches Chrome's guard.
-        local newest_version=""
-        local newest_mtime=0
-        local current_mtime
-        current_mtime=$(stat -f%m "$versions_dir/$current_version" 2> /dev/null || echo "0")
-        [[ "$current_mtime" =~ ^[0-9]+$ ]] || current_mtime=0
-
-        local -a old_versions=()
-        local dir name
-        for dir in "$versions_dir"/*; do
-            [[ -d "$dir" ]] || continue
-            name=$(basename "$dir")
-            [[ "$name" == "Current" ]] && continue
-            local mtime
-            mtime=$(stat -f%m "$dir" 2> /dev/null || echo "0")
-            if [[ "$mtime" =~ ^[0-9]+$ ]] && [[ "$mtime" -gt "$newest_mtime" ]]; then
-                newest_mtime="$mtime"
-                newest_version="$name"
-            fi
-        done
-        if [[ "$newest_mtime" -le "$current_mtime" ]]; then
-            newest_version=""
-        fi
-
-        for dir in "$versions_dir"/*; do
-            [[ -d "$dir" ]] || continue
-            name=$(basename "$dir")
-            [[ "$name" == "Current" ]] && continue
-            [[ "$name" == "$current_version" ]] && continue
-            [[ -n "$newest_version" && "$name" == "$newest_version" ]] && continue
-            if is_path_whitelisted "$dir"; then
-                continue
-            fi
-            old_versions+=("$dir")
-        done
-
-        if [[ ${#old_versions[@]} -eq 0 ]]; then
-            continue
-        fi
-
-        for dir in "${old_versions[@]}"; do
-            local size_kb
-            size_kb=$(get_path_size_kb "$dir" || echo 0)
-            size_kb="${size_kb:-0}"
-            total_size=$((total_size + size_kb))
-            cleaned_count=$((cleaned_count + 1))
-            cleaned_any=true
-            if [[ "$DRY_RUN" != "true" ]]; then
-                if has_sudo_session; then
-                    safe_sudo_remove "$dir" > /dev/null 2>&1 || true
-                else
-                    safe_remove "$dir" true > /dev/null 2>&1 || true
-                fi
-            fi
-        done
-    done
-
-    if [[ "$cleaned_any" == "true" ]]; then
-        local size_human
-        size_human=$(bytes_to_human "$((total_size * 1024))")
-        if [[ "$DRY_RUN" == "true" ]]; then
-            echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} Brave old versions${NC} · ${YELLOW}${cleaned_count} dirs, $(colorize_human_size "$size_human") ${YELLOW}dry${NC}"
-        else
-            local line_color
-            line_color=$(cleanup_result_color_kb "$total_size")
-            echo -e "  ${line_color}${ICON_SUCCESS}${NC} Brave old versions${NC} · ${line_color}${cleaned_count} dirs, $size_human${NC}"
-        fi
-        files_cleaned=$((files_cleaned + cleaned_count))
-        total_size_cleaned=$((total_size_cleaned + total_size))
-        total_items=$((total_items + 1))
-        note_activity
-    fi
+    _clean_chromium_old_versions "Brave" "Brave Browser Framework.framework" \
+        is_brave_browser_running "${app_paths[@]}"
 }
 
 # Finder metadata (.DS_Store).
