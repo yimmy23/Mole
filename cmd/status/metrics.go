@@ -377,9 +377,16 @@ func (c *Collector) collectFull() (MetricsSnapshot, error) {
 	hostInfo := collectHostInfo()
 	var collected collectedMetrics
 
+	// Sample CPU first, before the concurrent collectors below spawn their
+	// subprocesses (system_profiler, df, ps, ...). The usage window is only
+	// 100ms, so measuring while our own collection burst runs inflates the
+	// reading with Mole's own load (#1237).
+	var cpuErr error
+	collected.cpuStats, cpuErr = collectCPU()
+
 	// Launch independent collection tasks.
 	tasks := []func() error{
-		func() (err error) { collected.cpuStats, err = collectCPU(); return },
+		func() error { return cpuErr },
 		func() (err error) { collected.memStats, err = collectMemory(); return },
 		func() (err error) { collected.diskStats, err = collectDisks(); return },
 		func() (err error) { collected.trashSize, collected.trashApprox = collectTrashSize(); return nil },
