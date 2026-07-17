@@ -931,6 +931,73 @@ opt_prevent_network_dsstore() {
     fi
 }
 
+# Legacy override audit (#1242, #1243): old tweak utilities leave behind
+# hidden preferences that silently change safe macOS defaults, and current
+# System Settings never surfaces them. Covered overrides: the global App Nap
+# kill switch (NSAppSleepDisabled) and the DiskImages skip-verify family.
+# Silent when the OS defaults are in effect. Repair deletes only the explicit
+# override key, restoring automatic macOS behavior; it never writes a
+# replacement preference and never touches the plist file itself.
+opt_legacy_overrides_audit() {
+    if [[ "${MO_DEBUG:-}" == "1" ]]; then
+        debug_operation_start "Legacy Overrides" "Detect App Nap and disk-image verification overrides"
+        debug_operation_detail "Method" "defaults read -g NSAppSleepDisabled; defaults read com.apple.frameworks.diskimages skip-verify*"
+        debug_operation_detail "Expected outcome" "Overrides removed so macOS defaults apply again"
+        debug_risk_level "LOW" "Deletes explicit override keys only; macOS falls back to its default behavior"
+    fi
+
+    local -a found_labels=()
+    local -a found_domains=()
+    local -a found_keys=()
+    local -a found_plists=()
+
+    _opt_defaults_is_truthy() {
+        [[ "$1" == "1" || "$1" =~ ^([Tt][Rr][Uu][Ee]|[Yy][Ee][Ss])$ ]]
+    }
+
+    local value
+    value=$(defaults read -g NSAppSleepDisabled 2> /dev/null || echo "")
+    if _opt_defaults_is_truthy "$value"; then
+        found_labels+=("App Nap disabled globally (NSAppSleepDisabled)")
+        found_domains+=("-g")
+        found_keys+=("NSAppSleepDisabled")
+        found_plists+=("$HOME/Library/Preferences/.GlobalPreferences.plist")
+    fi
+
+    local key
+    for key in skip-verify skip-verify-locked skip-verify-remote; do
+        value=$(defaults read com.apple.frameworks.diskimages "$key" 2> /dev/null || echo "")
+        if _opt_defaults_is_truthy "$value"; then
+            found_labels+=("Disk-image verification skipped (${key})")
+            found_domains+=("com.apple.frameworks.diskimages")
+            found_keys+=("$key")
+            found_plists+=("$HOME/Library/Preferences/com.apple.frameworks.diskimages.plist")
+        fi
+    done
+
+    if [[ ${#found_keys[@]} -eq 0 ]]; then
+        opt_msg "No legacy App Nap or disk-image overrides found"
+        return 0
+    fi
+
+    local idx
+    for idx in "${!found_keys[@]}"; do
+        if command -v is_path_whitelisted > /dev/null 2>&1 && is_path_whitelisted "${found_plists[$idx]}"; then
+            opt_msg "Skipped (whitelisted): ${found_labels[$idx]}"
+            continue
+        fi
+        if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+            echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} Would remove override: ${found_labels[$idx]}"
+            continue
+        fi
+        if defaults delete "${found_domains[$idx]}" "${found_keys[$idx]}" 2> /dev/null; then
+            opt_msg "Removed override: ${found_labels[$idx]}"
+        else
+            echo -e "  ${YELLOW}${ICON_WARNING}${NC} Could not remove override: ${found_labels[$idx]}"
+        fi
+    done
+}
+
 # True unless the path lives on an unmounted /Volumes/<disk>. A LaunchAgent
 # program on an external or network volume is not broken while that volume is
 # simply unplugged, so it must not be deleted.
@@ -1418,6 +1485,7 @@ execute_optimization() {
         launch_services_rebuild) opt_launch_services_rebuild ;;
         dock_refresh) opt_dock_refresh ;;
         prevent_network_dsstore) opt_prevent_network_dsstore ;;
+        legacy_overrides_audit) opt_legacy_overrides_audit ;;
         memory_pressure_relief) opt_memory_pressure_relief ;;
         network_stack_optimize) opt_network_stack_optimize ;;
         disk_permissions_repair) opt_disk_permissions_repair ;;

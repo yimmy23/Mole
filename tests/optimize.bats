@@ -417,6 +417,94 @@ EOF
 	[[ "$output" == *"already enabled"* ]]
 }
 
+@test "opt_legacy_overrides_audit stays silent-positive when defaults are in effect" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/optimize/tasks.sh"
+defaults() {
+    if [[ "$1" == "read" ]]; then return 1; fi
+    echo "DELETE_CALLED:$*"
+    return 0
+}
+opt_legacy_overrides_audit
+EOF
+
+	[ "$status" -eq 0 ] || return 1
+	[[ "$output" == *"No legacy App Nap or disk-image overrides found"* ]] || return 1
+	[[ "$output" != *"DELETE_CALLED"* ]] || return 1
+}
+
+@test "opt_legacy_overrides_audit removes App Nap and skip-verify overrides (#1242 #1243)" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/optimize/tasks.sh"
+defaults() {
+    if [[ "$1" == "read" ]]; then
+        # -g NSAppSleepDisabled and diskimages skip-verify are overridden;
+        # the other skip-verify variants stay at the OS default.
+        if [[ "$2" == "-g" && "$3" == "NSAppSleepDisabled" ]]; then echo "1"; return 0; fi
+        if [[ "$2" == "com.apple.frameworks.diskimages" && "$3" == "skip-verify" ]]; then echo "1"; return 0; fi
+        return 1
+    fi
+    echo "DELETE_CALLED:$2 $3"
+    return 0
+}
+opt_legacy_overrides_audit
+EOF
+
+	[ "$status" -eq 0 ] || return 1
+	[[ "$output" == *"DELETE_CALLED:-g NSAppSleepDisabled"* ]] || return 1
+	[[ "$output" == *"DELETE_CALLED:com.apple.frameworks.diskimages skip-verify"* ]] || return 1
+	[[ "$output" != *"skip-verify-locked"* ]] || return 1
+	[[ "$output" == *"Removed override: App Nap disabled globally"* ]] || return 1
+	[[ "$output" == *"Removed override: Disk-image verification skipped (skip-verify)"* ]] || return 1
+}
+
+@test "opt_legacy_overrides_audit dry-run previews without deleting" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_DRY_RUN=1 bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/optimize/tasks.sh"
+defaults() {
+    if [[ "$1" == "read" ]]; then
+        if [[ "$2" == "-g" && "$3" == "NSAppSleepDisabled" ]]; then echo "1"; return 0; fi
+        return 1
+    fi
+    echo "DELETE_CALLED:$*"
+    return 0
+}
+opt_legacy_overrides_audit
+EOF
+
+	[ "$status" -eq 0 ] || return 1
+	[[ "$output" == *"Would remove override: App Nap disabled globally"* ]] || return 1
+	[[ "$output" != *"DELETE_CALLED"* ]] || return 1
+}
+
+@test "opt_legacy_overrides_audit honors plist whitelist before repair" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/optimize/tasks.sh"
+defaults() {
+    if [[ "$1" == "read" ]]; then
+        if [[ "$2" == "-g" && "$3" == "NSAppSleepDisabled" ]]; then echo "1"; return 0; fi
+        return 1
+    fi
+    echo "DELETE_CALLED:$*"
+    return 0
+}
+is_path_whitelisted() { [[ "$1" == *".GlobalPreferences.plist" ]]; }
+opt_legacy_overrides_audit
+EOF
+
+	[ "$status" -eq 0 ] || return 1
+	[[ "$output" == *"Skipped (whitelisted): App Nap disabled globally"* ]] || return 1
+	[[ "$output" != *"DELETE_CALLED"* ]] || return 1
+}
+
 @test "prevent_network_dsstore is optional in optimize health json" {
 	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" bash --noprofile --norc <<'EOF'
 set -euo pipefail
