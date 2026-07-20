@@ -309,16 +309,20 @@ _tty_bg_field() {
 	[ "$fg" != "$child" ] || return 1
 }
 
-# Guard the actual call sites: the background metadata refresh and scan workers
-# in bin/uninstall.sh must redirect stdin from /dev/null. Without it the perl
-# timeout fallback can steal the terminal from a background worker (#1222).
-@test "uninstall.sh: background metadata/scan workers redirect stdin (#1222)" {
+# Guard the actual call sites: background uninstall workers must redirect stdin
+# from /dev/null. Without it the Perl timeout fallback can steal the terminal
+# from a background worker and suspend the foreground prompt with SIGTTIN.
+@test "uninstall: background timeout workers redirect stdin (#1222)" {
 	# Disowned metadata-refresh subshell close.
 	run grep -nE '^[[:space:]]*\)[[:space:]]*>[[:space:]]*/dev/null[[:space:]]+2>&1[[:space:]]+<[[:space:]]*/dev/null[[:space:]]*&[[:space:]]*$' "$PROJECT_ROOT/bin/uninstall.sh"
 	[ "$status" -eq 0 ] || return 1
 	# Parallel scan workers.
 	run grep -nE 'process_app_metadata[[:space:]].*<[[:space:]]*/dev/null[[:space:]]*&[[:space:]]*$' "$PROJECT_ROOT/bin/uninstall.sh"
 	[ "$status" -eq 0 ] || return 1
+	# Post-uninstall work: Homebrew autoremove and LaunchServices/Dock refresh.
+	run grep -cE '^[[:space:]]*\)[[:space:]]*>[[:space:]]*/dev/null[[:space:]]+2>&1[[:space:]]+<[[:space:]]*/dev/null[[:space:]]*&[[:space:]]*$' "$PROJECT_ROOT/lib/uninstall/batch.sh"
+	[ "$status" -eq 0 ] || return 1
+	[ "$output" -eq 2 ] || return 1
 }
 
 @test "run_with_timeout: shell fallback preserves caller INT trap" {

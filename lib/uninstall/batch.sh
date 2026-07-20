@@ -1603,10 +1603,13 @@ batch_uninstall_applications() {
 
     # Run brew autoremove silently in background to avoid interrupting UX.
     if [[ $brew_apps_removed -gt 0 && "${MOLE_DRY_RUN:-0}" != "1" ]]; then
+        # This background job never needs terminal input. Keeping its stdin
+        # attached lets the Perl timeout fallback hand off the controlling tty
+        # and suspend the foreground uninstall prompt with SIGTTIN.
         (
             HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_AUTO_UPDATE=1 NONINTERACTIVE=1 \
                 run_with_timeout "$MOLE_TIMEOUT_DISK_VERIFY_SEC" brew autoremove > /dev/null 2>&1 || true
-        ) &
+        ) > /dev/null 2>&1 < /dev/null &
         disown $! 2> /dev/null || true
     fi
 
@@ -1615,10 +1618,12 @@ batch_uninstall_applications() {
         if is_uninstall_dry_run; then
             log_info "[DRY RUN] Would refresh LaunchServices and update Dock entries"
         else
+            # LaunchServices refresh uses run_with_timeout. It is best-effort
+            # background work, so it must never own the tty.
             (
                 remove_apps_from_dock "${success_dock_targets[@]}" > /dev/null 2>&1 || true
                 refresh_launch_services_after_uninstall > /dev/null 2>&1 || true
-            ) &
+            ) > /dev/null 2>&1 < /dev/null &
             disown $! 2> /dev/null || true
         fi
     fi
