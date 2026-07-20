@@ -851,7 +851,9 @@ func getDirectorySizeFromDuWithExcludeAndIgnores(path string, excludePath string
 			args = append(args, "-I", ignoreName)
 		}
 		args = append(args, target)
-		cmd := exec.CommandContext(ctx, "du", args...)
+		// In deep mode, reads of root-owned system paths (/private/...) are
+		// elevated with `sudo -n`; every other target runs du unprivileged.
+		cmd := deepDuCommand(ctx, target, args...)
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
