@@ -796,9 +796,18 @@ func measureOverviewSize(path string) (int64, error) {
 		excludePath = filepath.Join(home, "Library")
 	}
 
-	if duSize, err := getDirectorySizeFromDuWithExcludeAndIgnores(path, excludePath, overviewIgnoreNamesForPath(path)); err == nil {
+	duSize, duErr := getDirectorySizeFromDuWithExcludeAndIgnores(path, excludePath, overviewIgnoreNamesForPath(path))
+	if duErr == nil {
 		_ = storeOverviewSize(path, duSize)
 		return duSize, nil
+	}
+
+	// Root-owned trees are only measurable through the elevated du. Every
+	// fallback below runs unprivileged and would report a permission-denied
+	// undercount as if it were the real size, which is the exact failure deep
+	// mode exists to fix. Surface the error instead.
+	if deepScanRequiresElevation(path) {
+		return 0, fmt.Errorf("elevated measurement failed, sudo may have expired: %v", duErr)
 	}
 
 	if logicalSize, err := getDirectoryLogicalSizeWithExclude(path, excludePath); err == nil {
@@ -851,7 +860,9 @@ func getDirectorySizeFromDuWithExcludeAndIgnores(path string, excludePath string
 			args = append(args, "-I", ignoreName)
 		}
 		args = append(args, target)
-		cmd := exec.CommandContext(ctx, "du", args...)
+		// In deep mode, reads of root-owned system paths (/private/...) are
+		// elevated with `sudo -n`; every other target runs du unprivileged.
+		cmd := deepDuCommand(ctx, target, args...)
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr

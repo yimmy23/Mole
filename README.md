@@ -189,6 +189,8 @@ Select a location to explore:
 ↑↓→ | Enter | R Refresh | O Open | P Preview | F File | Esc/Q Quit
 ```
 
+> Note: `mo analyze --deep` also measures root-owned areas such as `/private/var/folders`, which macOS hides inside "System Data". It asks for `sudo` once up front and falls back to the normal view if you decline. These areas are read-only in analyze: they are shown so you can see what is filling the disk, not deleted from here.
+
 ### Live System Status
 
 Real-time dashboard with health score, hardware info, and performance metrics.

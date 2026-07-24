@@ -18,6 +18,7 @@ import (
 
 var (
 	jsonMode = flag.Bool("json", false, "output analysis as JSON instead of TUI")
+	deepMode = flag.Bool("deep", false, "include root-owned system areas (e.g. /private/var/folders) using sudo")
 )
 
 func main() {
@@ -43,6 +44,15 @@ func main() {
 		}
 		isOverview = false
 	}
+
+	// Deep scan is opt-in. Enable it, then prime sudo once before the TUI starts
+	// so later root-owned reads use `sudo -n` and never block the interface on a
+	// password prompt. Priming may disable deep mode if auth is declined, and
+	// never prompts in --json so automation cannot hang on it.
+	if *deepMode {
+		_ = os.Setenv("MO_ANALYZE_DEEP", "1")
+	}
+	primeSudoForDeepScan(!*jsonMode)
 
 	go pruneAnalyzerCache()
 	if *jsonMode {
