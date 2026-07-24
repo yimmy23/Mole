@@ -20,20 +20,15 @@ func collectProcesses() ([]ProcessInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	out, err := runPS(ctx, "-Aceo", "pid=,ppid=,pcpu=,pmem=,rss=,comm=", "-r")
+	out, err := runCmd(ctx, "ps", "-Aceo", "pid=,ppid=,pcpu=,pmem=,rss=,comm=", "-r")
 	if err != nil {
-		out, err = runPS(ctx, "aux")
+		out, err = runCmd(ctx, "ps", "aux")
 		if err != nil {
 			return nil, err
 		}
 		return parsePsAuxOutput(out), nil
 	}
 	return parseProcessOutput(out), nil
-}
-
-func runPS(ctx context.Context, args ...string) (string, error) {
-	// ps localizes percentage columns, but the parser expects dot decimals.
-	return runCmd(ctx, "env", append([]string{"LC_ALL=C", "ps"}, args...)...)
 }
 
 func parseProcessOutput(raw string) []ProcessInfo {

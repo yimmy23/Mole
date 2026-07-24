@@ -3,35 +3,44 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"slices"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestRunPSForcesCLocale(t *testing.T) {
-	originalRunCmd := runCmd
-	t.Cleanup(func() {
-		runCmd = originalRunCmd
-	})
+// Guards #1267: ps and uptime emit comma decimals under locales like
+// ru_RU.UTF-8, which made every ParseFloat in the collectors fail.
+func TestRunCmdForcesCLocale(t *testing.T) {
+	t.Setenv("LC_ALL", "ru_RU.UTF-8")
+	t.Setenv("LC_NUMERIC", "ru_RU.UTF-8")
+	t.Setenv("LANG", "ru_RU.UTF-8")
 
-	var gotName string
-	var gotArgs []string
-	runCmd = func(_ context.Context, name string, args ...string) (string, error) {
-		gotName = name
-		gotArgs = slices.Clone(args)
-		return "", nil
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-	if _, err := runPS(context.Background(), "aux"); err != nil {
-		t.Fatalf("runPS() error = %v", err)
+	out, err := runCmd(ctx, "sh", "-c", "printf '%s|%s|%s' \"$LC_ALL\" \"$LC_NUMERIC\" \"$LANG\"")
+	if err != nil {
+		t.Fatalf("runCmd() error = %v", err)
 	}
-	if gotName != "env" {
-		t.Fatalf("runPS() command = %q, want env", gotName)
+	if out != "C||" {
+		t.Fatalf("runCmd() subprocess locale = %q, want %q", out, "C||")
 	}
-	wantArgs := []string{"LC_ALL=C", "ps", "aux"}
-	if !slices.Equal(gotArgs, wantArgs) {
-		t.Fatalf("runPS() args = %q, want %q", gotArgs, wantArgs)
+}
+
+func TestCollectProcessesUnderCommaLocale(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("ps output format is darwin-specific")
+	}
+	t.Setenv("LC_ALL", "ru_RU.UTF-8")
+	t.Setenv("LC_NUMERIC", "ru_RU.UTF-8")
+
+	procs, err := collectProcesses()
+	if err != nil {
+		t.Fatalf("collectProcesses() error = %v", err)
+	}
+	if len(procs) == 0 {
+		t.Fatal("collectProcesses() returned no processes under a comma-decimal locale")
 	}
 }
 
