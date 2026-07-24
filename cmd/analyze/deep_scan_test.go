@@ -37,6 +37,7 @@ func TestDeepScanEnabledAndSudoGuards(t *testing.T) {
 	// Disabled by default.
 	t.Setenv("MO_ANALYZE_DEEP", "")
 	t.Setenv("MOLE_TEST_NO_AUTH", "")
+	t.Setenv("MOLE_TEST_MODE", "")
 	if deepScanEnabled() {
 		t.Fatal("deepScanEnabled() should be false when MO_ANALYZE_DEEP is unset")
 	}
@@ -58,12 +59,45 @@ func TestDeepScanEnabledAndSudoGuards(t *testing.T) {
 	if deepScanUsesSudo() {
 		t.Fatal("deepScanUsesSudo() must be false under MOLE_TEST_NO_AUTH=1")
 	}
+
+	// MOLE_TEST_MODE is the other project-wide auth guard and must suppress
+	// sudo on its own, matching has_sudo_session() in lib/core/sudo.sh.
+	t.Setenv("MOLE_TEST_NO_AUTH", "")
+	t.Setenv("MOLE_TEST_MODE", "1")
+	if deepScanUsesSudo() {
+		t.Fatal("deepScanUsesSudo() must be false under MOLE_TEST_MODE=1")
+	}
+}
+
+func TestDeepScanRequiresElevation(t *testing.T) {
+	// Elevation is only required for system paths in an active deep scan;
+	// everywhere else measureOverviewSize keeps its unprivileged fallbacks.
+	t.Setenv("MO_ANALYZE_DEEP", "")
+	t.Setenv("MOLE_TEST_NO_AUTH", "")
+	t.Setenv("MOLE_TEST_MODE", "")
+	if deepScanRequiresElevation("/private/var/folders") {
+		t.Fatal("non-deep system path must not require elevation")
+	}
+
+	t.Setenv("MO_ANALYZE_DEEP", "1")
+	if !deepScanRequiresElevation("/private/var/folders") {
+		t.Fatal("deep system path must require elevation")
+	}
+	if deepScanRequiresElevation("/Users/someone") {
+		t.Fatal("user path must never require elevation")
+	}
+
+	t.Setenv("MOLE_TEST_NO_AUTH", "1")
+	if deepScanRequiresElevation("/private/var/folders") {
+		t.Fatal("guarded deep system path must not require elevation")
+	}
 }
 
 func TestDuCommandFor(t *testing.T) {
 	// Not deep: always plain du, no matter the path.
 	t.Setenv("MO_ANALYZE_DEEP", "")
 	t.Setenv("MOLE_TEST_NO_AUTH", "")
+	t.Setenv("MOLE_TEST_MODE", "")
 	if name, lead := duCommandFor("/private/var/folders"); name != "du" || lead != nil {
 		t.Fatalf("non-deep du for system path = (%q, %v), want (du, nil)", name, lead)
 	}
@@ -93,6 +127,7 @@ func TestDeepDuCommandArgs(t *testing.T) {
 	// Non-deep: exactly the plain du argv.
 	t.Setenv("MO_ANALYZE_DEEP", "")
 	t.Setenv("MOLE_TEST_NO_AUTH", "")
+	t.Setenv("MOLE_TEST_MODE", "")
 	cmd := deepDuCommand(ctx, "/tmp/x", "-sk", "/tmp/x")
 	want := []string{"du", "-sk", "/tmp/x"}
 	if !reflect.DeepEqual(cmd.Args, want) {

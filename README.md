@@ -189,7 +189,7 @@ Select a location to explore:
 ↑↓→ | Enter | R Refresh | O Open | P Preview | F File | Esc/Q Quit
 ```
 
-> Deep scan: `mo analyze --deep` additionally measures root-owned system areas such as `/private/var/folders`, where background daemons (for example `com.apple.idleassetsd` aerial-wallpaper downloads) can silently accumulate tens of gigabytes that macOS hides inside the opaque "System Data" bucket. It is opt-in because it authenticates with `sudo` once, up front, and then reads without ever blocking the interface on a password prompt; if authentication is declined, `analyze` falls back to the normal, unprivileged view.
+> Note: `mo analyze --deep` also measures root-owned areas such as `/private/var/folders`, which macOS hides inside "System Data". It asks for `sudo` once up front and falls back to the normal view if you decline. These areas are read-only in analyze: they are shown so you can see what is filling the disk, not deleted from here.
 
 ### Live System Status
 
