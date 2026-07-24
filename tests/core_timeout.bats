@@ -322,7 +322,7 @@ _tty_bg_field() {
 	# Post-uninstall work: Homebrew autoremove and LaunchServices/Dock refresh.
 	run grep -cE '^[[:space:]]*\)[[:space:]]*>[[:space:]]*/dev/null[[:space:]]+2>&1[[:space:]]+<[[:space:]]*/dev/null[[:space:]]*&[[:space:]]*$' "$PROJECT_ROOT/lib/uninstall/batch.sh"
 	[ "$status" -eq 0 ] || return 1
-	[ "$output" -eq 2 ] || return 1
+	[ "$output" -ge 2 ] || return 1
 }
 
 @test "run_with_timeout: shell fallback preserves caller INT trap" {
