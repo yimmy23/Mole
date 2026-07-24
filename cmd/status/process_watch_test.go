@@ -1,11 +1,39 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestRunPSForcesCLocale(t *testing.T) {
+	originalRunCmd := runCmd
+	t.Cleanup(func() {
+		runCmd = originalRunCmd
+	})
+
+	var gotName string
+	var gotArgs []string
+	runCmd = func(_ context.Context, name string, args ...string) (string, error) {
+		gotName = name
+		gotArgs = slices.Clone(args)
+		return "", nil
+	}
+
+	if _, err := runPS(context.Background(), "aux"); err != nil {
+		t.Fatalf("runPS() error = %v", err)
+	}
+	if gotName != "env" {
+		t.Fatalf("runPS() command = %q, want env", gotName)
+	}
+	wantArgs := []string{"LC_ALL=C", "ps", "aux"}
+	if !slices.Equal(gotArgs, wantArgs) {
+		t.Fatalf("runPS() args = %q, want %q", gotArgs, wantArgs)
+	}
+}
 
 func TestParseProcessOutput(t *testing.T) {
 	raw := strings.Join([]string{
