@@ -1,11 +1,48 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
+
+// Guards #1267: ps and uptime emit comma decimals under locales like
+// ru_RU.UTF-8, which made every ParseFloat in the collectors fail.
+func TestRunCmdForcesCLocale(t *testing.T) {
+	t.Setenv("LC_ALL", "ru_RU.UTF-8")
+	t.Setenv("LC_NUMERIC", "ru_RU.UTF-8")
+	t.Setenv("LANG", "ru_RU.UTF-8")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	out, err := runCmd(ctx, "sh", "-c", "printf '%s|%s|%s' \"$LC_ALL\" \"$LC_NUMERIC\" \"$LANG\"")
+	if err != nil {
+		t.Fatalf("runCmd() error = %v", err)
+	}
+	if out != "C||" {
+		t.Fatalf("runCmd() subprocess locale = %q, want %q", out, "C||")
+	}
+}
+
+func TestCollectProcessesUnderCommaLocale(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("ps output format is darwin-specific")
+	}
+	t.Setenv("LC_ALL", "ru_RU.UTF-8")
+	t.Setenv("LC_NUMERIC", "ru_RU.UTF-8")
+
+	procs, err := collectProcesses()
+	if err != nil {
+		t.Fatalf("collectProcesses() error = %v", err)
+	}
+	if len(procs) == 0 {
+		t.Fatal("collectProcesses() returned no processes under a comma-decimal locale")
+	}
+}
 
 func TestParseProcessOutput(t *testing.T) {
 	raw := strings.Join([]string{

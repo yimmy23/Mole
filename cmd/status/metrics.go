@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -574,11 +576,29 @@ func (e snapshotEnrichment) apply(snapshot *MetricsSnapshot, preserveLiveProcess
 
 var runCmd = func(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = cLocaleEnv()
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
 	}
 	return string(output), nil
+}
+
+// cLocaleEnv forces the C locale on every metric subprocess. ps and uptime
+// localize their decimal separator, so under ru_RU.UTF-8 they emit "8,0" and
+// every strconv.ParseFloat in the collectors fails (#1267). The shell commands
+// in bin/ already export LC_ALL=C; status-go is exec'd directly and did not.
+func cLocaleEnv() []string {
+	env := os.Environ()
+	filtered := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		key, _, found := strings.Cut(kv, "=")
+		if found && (key == "LC_ALL" || key == "LANG" || strings.HasPrefix(key, "LC_")) {
+			continue
+		}
+		filtered = append(filtered, kv)
+	}
+	return append(filtered, "LC_ALL=C")
 }
 
 var commandExists = func(name string) bool {
